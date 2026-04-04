@@ -56,11 +56,26 @@ fn scan_save_dir(dir: &PathBuf) -> Result<Vec<SaveFolder>, String> {
             let path = entry.path();
             if path.is_dir() {
                 let metadata = entry.metadata().map_err(|e| e.to_string())?;
-                let last_modified = metadata.modified()
+                let mut last_modified = metadata.modified()
                     .unwrap_or(std::time::SystemTime::now())
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
+
+                // On Windows, in-place file modification doesn't always update the parent folder's modified time.
+                // We must check the actual .lsv or .webp files inside to get the true latest save time.
+                if let Ok(inner_entries) = fs::read_dir(&path) {
+                    for inner_entry in inner_entries.flatten() {
+                        if let Ok(inner_meta) = inner_entry.metadata() {
+                            if let Ok(inner_mod) = inner_meta.modified() {
+                                let inner_secs = inner_mod.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+                                if inner_secs > last_modified {
+                                    last_modified = inner_secs;
+                                }
+                            }
+                        }
+                    }
+                }
                     
                 saves.push(SaveFolder {
                     name: entry.file_name().to_string_lossy().to_string(),
@@ -77,47 +92,63 @@ fn scan_save_dir(dir: &PathBuf) -> Result<Vec<SaveFolder>, String> {
 
 #[tauri::command]
 pub fn backup_save(save_name: String) -> Result<(), String> {
-    let save_dir = get_bg3_save_dir()?.join(&save_name);
-    let backup_dir = get_backup_dir()?.join(&save_name);
-    
-    if !save_dir.exists() {
+    let source_dir = get_bg3_save_dir()?.join(&save_name);
+    if !source_dir.exists() {
         return Err("Save folder does not exist".to_string());
     }
-    
+
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let backup_name = format!("{}____{}", save_name, timestamp);
+    let backup_wrapper = get_backup_dir()?.join(&backup_name);
+
+    fs::create_dir_all(&backup_wrapper).map_err(|e| e.to_string())?;
+
     let mut options = fs_extra::dir::CopyOptions::new();
     options.overwrite = true;
     options.copy_inside = true;
-    
-    if backup_dir.exists() {
-        fs::remove_dir_all(&backup_dir).map_err(|e| e.to_string())?;
-    }
-    
-    fs_extra::dir::copy(&save_dir, get_backup_dir()?, &options)
-        .map_err(|e| e.to_string())?;
-        
+
+    fs_extra::dir::copy(&source_dir, &backup_wrapper, &options).map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
 #[tauri::command]
 pub fn restore_backup(backup_name: String) -> Result<(), String> {
-    let backup_dir = get_backup_dir()?.join(&backup_name);
-    let save_dir = get_bg3_save_dir()?.join(&backup_name);
-    
-    if !backup_dir.exists() {
+    let backup_wrapper = get_backup_dir()?.join(&backup_name);
+    if !backup_wrapper.exists() {
         return Err("Backup folder does not exist".to_string());
     }
+
+    // Determine if nested or direct
+    let mut inner_save_dir = backup_wrapper.clone();
+    let mut original_save_name = backup_name.clone();
+
+    // Check if it's nested (has exactly one directory inside)
+    let entries = fs::read_dir(&backup_wrapper).map_err(|e| e.to_string())?;
+    for entry in entries {
+        if let Ok(entry) = entry {
+            if entry.path().is_dir() {
+                // We found a directory inside, assume it's the actual save folder
+                inner_save_dir = entry.path();
+                original_save_name = entry.file_name().to_string_lossy().to_string();
+                break;
+            }
+        }
+    }
+
+    let target_dir = get_bg3_save_dir()?.join(&original_save_name);
     
     let mut options = fs_extra::dir::CopyOptions::new();
     options.overwrite = true;
-    options.copy_inside = true;
-    
-    if save_dir.exists() {
-        fs::remove_dir_all(&save_dir).map_err(|e| e.to_string())?;
+    options.copy_inside = true; 
+
+    if target_dir.exists() {
+        fs::remove_dir_all(&target_dir).map_err(|e| e.to_string())?;
     }
-    
-    fs_extra::dir::copy(&backup_dir, get_bg3_save_dir()?, &options)
+
+    fs_extra::dir::copy(&inner_save_dir, get_bg3_save_dir()?, &options)
         .map_err(|e| e.to_string())?;
-        
+
     Ok(())
 }
 
@@ -136,7 +167,7 @@ pub struct AppState {
 }
 
 #[tauri::command]
-pub fn toggle_auto_backup(
+pub async fn toggle_auto_backup(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
     enabled: bool,
@@ -146,7 +177,7 @@ pub fn toggle_auto_backup(
     // Only spawn the loop if it wasn't already running and we want it enabled.
     if enabled && !previously_enabled {
         let state_clone = state.inner().clone();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             auto_backup_loop(state_clone, app_handle).await;
         });
     }

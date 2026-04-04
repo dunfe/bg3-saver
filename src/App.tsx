@@ -1,7 +1,10 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Folder, Archive, Shield, Trash2, ArrowRightCircle, RefreshCcw } from "lucide-react";
-import "./App.css";
+import { Button } from "@/components/ui/button";
+import { Card, CardHeader, CardTitle } from "@/components/ui/card";
+import { Switch } from "@/components/ui/switch";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface SaveFolder {
   name: string;
@@ -73,14 +76,13 @@ function App() {
     setLoading(false);
   };
 
-  const toggleAutoBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const enabled = e.target.checked;
-    setAutoBackup(enabled);
+  const toggleAutoBackup = async (checked: boolean) => {
+    setAutoBackup(checked);
     try {
-      await invoke("toggle_auto_backup", { enabled });
+      await invoke("toggle_auto_backup", { enabled: checked });
     } catch (err) {
       console.error(err);
-      setAutoBackup(!enabled);
+      setAutoBackup(!checked);
     }
   };
 
@@ -89,84 +91,97 @@ function App() {
   };
 
   return (
-    <div className="app-container">
-      <header>
-        <h1 className="title">BG3 Save Manager</h1>
-        <label className={`auto-backup-toggle ${autoBackup ? 'active' : ''}`}>
-          <span>1-Min Auto Backup</span>
-          <div className="switch">
-            <input type="checkbox" checked={autoBackup} onChange={toggleAutoBackup} />
-            <span className="slider"></span>
-          </div>
-        </label>
+    <div className="dark min-h-screen bg-zinc-950 text-slate-50 flex flex-col p-6 font-sans">
+      <div className="fixed inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-900/40 via-zinc-950 to-zinc-950" />
+      
+      <header className="relative z-10 flex justify-between items-center mb-6">
+        <h1 className="text-3xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
+          BG3 Save Manager
+        </h1>
+        <div className="flex items-center gap-4 bg-zinc-900/50 border border-white/5 py-3 px-5 rounded-full backdrop-blur-md">
+          <span className="text-sm font-medium">1-Min Auto Backup</span>
+          <Switch 
+            checked={autoBackup}
+            onCheckedChange={toggleAutoBackup}
+            className="data-[state=checked]:bg-emerald-500"
+          />
+        </div>
       </header>
 
-      <div className="main-content">
-        <div className="panel">
-          <div className="panel-header">
-            <Folder className="icon" />
-            <h2>Active Saves</h2>
-            <button onClick={loadData} disabled={loading} style={{ marginLeft: "auto", padding: "6px" }}>
-              <RefreshCcw size={16} />
-            </button>
-          </div>
-          <div className="list-container">
-            {saves.length === 0 ? (
-              <div className="empty-state">
-                <Folder size={48} opacity={0.5} />
-                <p>No active saves found.</p>
-              </div>
-            ) : (
-              saves.map(save => (
-                <div key={save.name} className="save-card">
-                  <div className="save-info">
-                    <h3>{save.name}</h3>
-                    <p>{formatDate(save.last_modified)}</p>
-                  </div>
-                  <div className="actions">
-                    <button className="primary" onClick={() => handleBackup(save.name)} disabled={loading}>
-                      <Shield size={16} />
-                      Backup
-                    </button>
-                  </div>
+      <div className="relative z-10 grid grid-cols-1 md:grid-cols-2 gap-6 flex-1 min-h-0">
+        
+        <Card className="bg-zinc-900/40 border-white/10 backdrop-blur-xl flex flex-col pt-0 text-slate-50 overflow-hidden">
+          <CardHeader className="flex flex-row items-center border-b border-white/5 pb-4 pt-5 px-6 sticky top-0 bg-zinc-900/80 z-20">
+            <Folder className="w-5 h-5 text-indigo-400 mr-3" />
+            <div className="flex-1">
+              <CardTitle className="text-xl">Active Saves</CardTitle>
+            </div>
+            <Button variant="ghost" size="icon" onClick={loadData} disabled={loading} className="text-zinc-400 hover:text-white">
+              <RefreshCcw className="w-4 h-4" />
+            </Button>
+          </CardHeader>
+          <ScrollArea className="flex-1">
+            <div className="p-6 space-y-4">
+              {saves.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-48 text-zinc-500 gap-4">
+                  <Folder className="w-12 h-12 opacity-50" />
+                  <p>No active saves found.</p>
                 </div>
-              ))
-            )}
-          </div>
-        </div>
+              ) : (
+                saves.map(save => (
+                  <div key={save.name} className="flex justify-between items-center p-4 bg-black/40 border border-white/5 rounded-xl transition-all hover:bg-black/60 hover:-translate-y-0.5">
+                    <div>
+                      <h3 className="font-medium text-[15px]">{save.name}</h3>
+                      <p className="text-xs text-zinc-400 mt-1">{formatDate(save.last_modified)}</p>
+                    </div>
+                    <div>
+                      <Button onClick={() => handleBackup(save.name)} disabled={loading} size="sm" className="bg-indigo-600 hover:bg-indigo-500 text-white gap-2">
+                        <Shield className="w-4 h-4" />
+                        Backup
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </ScrollArea>
+        </Card>
 
-        <div className="panel">
-          <div className="panel-header">
-            <Archive className="icon" />
-            <h2>Backups</h2>
-          </div>
-          <div className="list-container">
-            {backups.length === 0 ? (
-              <div className="empty-state">
-                <Archive size={48} opacity={0.5} />
-                <p>No backups available.</p>
-              </div>
-            ) : (
-              backups.map(backup => (
-                <div key={backup.name} className="save-card">
-                  <div className="save-info">
-                    <h3>{backup.name}</h3>
-                    <p>{formatDate(backup.last_modified)}</p>
-                  </div>
-                  <div className="actions">
-                    <button onClick={() => handleRestore(backup.name)} disabled={loading}>
-                      <ArrowRightCircle size={16} />
-                      Restore
-                    </button>
-                    <button className="danger" onClick={() => handleDelete(backup.name)} disabled={loading}>
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
+        <Card className="bg-zinc-900/40 border-white/10 backdrop-blur-xl flex flex-col pt-0 text-slate-50 overflow-hidden">
+          <CardHeader className="flex flex-row items-center border-b border-white/5 pb-4 pt-5 px-6 sticky top-0 bg-zinc-900/80 z-20">
+            <Archive className="w-5 h-5 text-purple-400 mr-3" />
+            <CardTitle className="text-xl">Backups</CardTitle>
+          </CardHeader>
+          <ScrollArea className="flex-1">
+            <div className="p-6 space-y-4">
+              {backups.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-48 text-zinc-500 gap-4">
+                  <Archive className="w-12 h-12 opacity-50" />
+                  <p>No backups available.</p>
                 </div>
-              ))
-            )}
-          </div>
-        </div>
+              ) : (
+                backups.map(backup => (
+                  <div key={backup.name} className="flex justify-between items-center p-4 bg-black/40 border border-white/5 rounded-xl transition-all hover:bg-black/60 hover:-translate-y-0.5">
+                    <div>
+                      <h3 className="font-medium text-[15px]">{backup.name}</h3>
+                      <p className="text-xs text-zinc-400 mt-1">{formatDate(backup.last_modified)}</p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button variant="outline" size="sm" onClick={() => handleRestore(backup.name)} disabled={loading} className="bg-transparent border-white/10 hover:bg-white/5 text-slate-100 gap-2">
+                        <ArrowRightCircle className="w-4 h-4 text-emerald-400" />
+                        Restore
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => handleDelete(backup.name)} disabled={loading} className="bg-transparent border-red-500/30 hover:bg-red-500/10 text-red-500">
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </ScrollArea>
+        </Card>
+
       </div>
     </div>
   );
