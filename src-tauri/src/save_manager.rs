@@ -194,7 +194,7 @@ async fn auto_backup_loop(state: AppState, _app: tauri::AppHandle) {
     let mut last_backed_up_time = 0;
     
     while state.auto_backup_enabled.load(Ordering::SeqCst) {
-        tokio::time::sleep(Duration::from_secs(60)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         
         if !state.auto_backup_enabled.load(Ordering::SeqCst) {
             break;

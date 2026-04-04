@@ -99,7 +99,7 @@ function App() {
           BG3 Save Manager
         </h1>
         <div className="flex items-center gap-4 bg-zinc-900/50 border border-white/5 py-3 px-5 rounded-full backdrop-blur-md">
-          <span className="text-sm font-medium">1-Min Auto Backup</span>
+          <span className="text-sm font-medium">Instant Auto Backup</span>
           <Switch 
             checked={autoBackup}
             onCheckedChange={toggleAutoBackup}
