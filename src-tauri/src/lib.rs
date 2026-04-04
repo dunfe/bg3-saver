@@ -1,10 +1,6 @@
 pub mod save_manager;
 
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-use save_manager::{
-    get_saves, get_backups, backup_save, restore_backup, delete_backup,
-};
+use save_manager::{backup_save, delete_backup, get_backups, get_saves, restore_backup};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
