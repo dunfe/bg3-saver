@@ -254,7 +254,7 @@ pub fn delete_backup(backup_name: String) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-backup state
+// Event-driven auto-backup 
 // ---------------------------------------------------------------------------
 
 fn log_debug(msg: &str) {
@@ -266,45 +266,7 @@ fn log_debug(msg: &str) {
     }
 }
 
-#[derive(Clone)]
-pub struct AppState {
-    pub auto_backup_enabled: Arc<AtomicBool>,
-    pub watcher_generation: Arc<std::sync::atomic::AtomicUsize>, // Fix 3
-}
-
-#[tauri::command]
-pub async fn toggle_auto_backup(
-    state: tauri::State<'_, AppState>,
-    app_handle: tauri::AppHandle,
-    enabled: bool,
-) -> Result<(), String> {
-    state.auto_backup_enabled.store(enabled, Ordering::SeqCst);
-    log_debug(&format!("toggle_auto_backup: {}", enabled));
-
-    if enabled {
-        let gen = state.watcher_generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let state_clone = state.inner().clone();
-        tauri::async_runtime::spawn(async move {
-            auto_backup_watcher(state_clone, app_handle, gen).await;
-        });
-    } else {
-        // Increment generation to cancel any sleeping watcher
-        state.watcher_generation.fetch_add(1, Ordering::SeqCst);
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
-pub fn get_auto_backup_status(state: tauri::State<'_, AppState>) -> Result<bool, String> {
-    Ok(state.auto_backup_enabled.load(Ordering::SeqCst))
-}
-
-// ---------------------------------------------------------------------------
-// Event-driven auto-backup (replaces polling loop)
-// ---------------------------------------------------------------------------
-
-async fn auto_backup_watcher(state: AppState, _app: tauri::AppHandle, generation: usize) {
+pub async fn auto_backup_watcher(_app: tauri::AppHandle) {
     let save_dir = match get_bg3_save_dir() {
         Ok(d) => d,
         Err(e) => {
@@ -320,7 +282,7 @@ async fn auto_backup_watcher(state: AppState, _app: tauri::AppHandle, generation
         }
     }
 
-    log_debug(&format!("Auto backup watcher started (gen {}) — watching {:?}", generation, save_dir));
+    log_debug(&format!("Auto backup permanent watcher started — watching {:?}", save_dir));
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -354,14 +316,9 @@ async fn auto_backup_watcher(state: AppState, _app: tauri::AppHandle, generation
 
     let mut last_backup: Option<Instant> = None;
 
-    while state.auto_backup_enabled.load(Ordering::SeqCst) && state.watcher_generation.load(Ordering::SeqCst) == generation {
+    loop {
         let maybe_events =
             tokio::time::timeout(Duration::from_millis(3000), rx.recv()).await;
-
-        if !state.auto_backup_enabled.load(Ordering::SeqCst) || state.watcher_generation.load(Ordering::SeqCst) != generation {
-            log_debug("Watcher gracefully exiting due to state change");
-            break;
-        }
 
         let events = match maybe_events {
             Err(_) => continue,

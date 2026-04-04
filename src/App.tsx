@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { Folder, Archive, Shield, Trash2, ArrowRightCircle, RefreshCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
-import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface SaveFolder {
@@ -15,18 +14,15 @@ interface SaveFolder {
 function App() {
   const [saves, setSaves] = useState<SaveFolder[]>([]);
   const [backups, setBackups] = useState<SaveFolder[]>([]);
-  const [autoBackup, setAutoBackup] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const loadData = async () => {
     try {
       const activeSaves: SaveFolder[] = await invoke("get_saves");
       const savedBackups: SaveFolder[] = await invoke("get_backups");
-      const autoStatus: boolean = await invoke("get_auto_backup_status");
       
       setSaves(activeSaves);
       setBackups(savedBackups);
-      setAutoBackup(autoStatus);
     } catch (e) {
       console.error(e);
     }
@@ -76,15 +72,7 @@ function App() {
     setLoading(false);
   };
 
-  const toggleAutoBackup = async (checked: boolean) => {
-    setAutoBackup(checked);
-    try {
-      await invoke("toggle_auto_backup", { enabled: checked });
-    } catch (err) {
-      console.error(err);
-      setAutoBackup(!checked);
-    }
-  };
+
 
   const formatDate = (ts: number) => {
     return new Date(ts * 1000).toLocaleString();
@@ -99,12 +87,8 @@ function App() {
           BG3 Save Manager
         </h1>
         <div className="flex items-center justify-between sm:justify-start w-full sm:w-auto gap-4 bg-zinc-900/50 border border-white/5 py-3 px-5 rounded-full backdrop-blur-md">
-          <span className="text-sm font-medium">Instant Auto Backup</span>
-          <Switch 
-            checked={autoBackup}
-            onCheckedChange={toggleAutoBackup}
-            className="data-[state=checked]:bg-emerald-500"
-          />
+          <span className="text-sm font-medium">Instant Auto Backup: <span className="text-emerald-400 font-bold ml-1">Active</span></span>
+          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
         </div>
       </header>
 

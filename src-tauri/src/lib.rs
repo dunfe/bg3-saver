@@ -4,27 +4,25 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use save_manager::{
     get_saves, get_backups, backup_save, restore_backup, delete_backup,
-    toggle_auto_backup, get_auto_backup_status, AppState,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app_state = AppState {
-        auto_backup_enabled: Arc::new(AtomicBool::new(false)),
-        watcher_generation: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-    };
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(app_state)
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                save_manager::auto_backup_watcher(app_handle).await;
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_saves,
             get_backups,
             backup_save,
             restore_backup,
             delete_backup,
-            toggle_auto_backup,
-            get_auto_backup_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
