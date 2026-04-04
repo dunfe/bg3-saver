@@ -11,6 +11,7 @@ use save_manager::{
 pub fn run() {
     let app_state = AppState {
         auto_backup_enabled: Arc::new(AtomicBool::new(false)),
+        watcher_generation: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     };
 
     tauri::Builder::default()

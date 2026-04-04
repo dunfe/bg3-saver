@@ -1,8 +1,9 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{Instant, UNIX_EPOCH};
 
 use notify::RecursiveMode;
 use notify_debouncer_mini::new_debouncer;
@@ -20,12 +21,16 @@ pub fn get_bg3_save_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+fn get_backup_root() -> Result<PathBuf, String> {
+    dirs::document_dir()
+        .ok_or_else(|| "Could not find Documents directory".to_string())
+        .map(|d| d.join("BG3_Backups"))
+}
+
 /// Returns the backup directory path, creating it if it doesn't already exist.
 /// Named `ensure_*` to make the side-effect clear at call sites.
 pub fn ensure_backup_dir() -> Result<PathBuf, String> {
-    let dir = dirs::document_dir()
-        .ok_or("Could not find Documents directory")?
-        .join("BG3_Backups");
+    let dir = get_backup_root()?;
 
     if !dir.exists() {
         fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -36,10 +41,7 @@ pub fn ensure_backup_dir() -> Result<PathBuf, String> {
 
 /// Returns the backup directory path *without* any side effects.
 pub fn get_backup_dir() -> Result<PathBuf, String> {
-    let dir = dirs::document_dir()
-        .ok_or("Could not find Documents directory")?
-        .join("BG3_Backups");
-    Ok(dir)
+    get_backup_root()
 }
 
 // ---------------------------------------------------------------------------
@@ -81,40 +83,52 @@ fn scan_save_dir(dir: &Path) -> Result<Vec<SaveFolder>, String> {
     let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
 
     for entry in entries {
-        if let Ok(entry) = entry {
-            let path = entry.path();
-            if path.is_dir() {
-                let metadata = entry.metadata().map_err(|e| e.to_string())?;
-                let mut last_modified = metadata
-                    .modified()
-                    .unwrap_or(std::time::SystemTime::now())
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
+        match entry {
+            Ok(entry) => {
+                let path = entry.path();
+                if path.is_dir() {
+                    let metadata = match entry.metadata() {
+                        Ok(m) => m,
+                        Err(e) => {
+                            eprintln!("Failed to read metadata for {:?}: {}", path, e);
+                            continue;
+                        }
+                    };
+                    
+                    let mut last_modified = metadata
+                        .modified()
+                        .unwrap_or(std::time::UNIX_EPOCH) // Fix 6: fallback sorting
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
 
-                // On Windows, in-place file modification doesn't always update
-                // the parent folder's modified time.  Check inner files instead.
-                if let Ok(inner_entries) = fs::read_dir(&path) {
-                    for inner_entry in inner_entries.flatten() {
-                        if let Ok(inner_meta) = inner_entry.metadata() {
-                            if let Ok(inner_mod) = inner_meta.modified() {
-                                let inner_secs = inner_mod
-                                    .duration_since(UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs();
-                                if inner_secs > last_modified {
-                                    last_modified = inner_secs;
+                    // On Windows, in-place file modification doesn't always update
+                    // the parent folder's modified time.  Check inner files instead.
+                    if let Ok(inner_entries) = fs::read_dir(&path) {
+                        for inner_entry in inner_entries.flatten() {
+                            if let Ok(inner_meta) = inner_entry.metadata() {
+                                if let Ok(inner_mod) = inner_meta.modified() {
+                                    let inner_secs = inner_mod
+                                        .duration_since(UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs();
+                                    if inner_secs > last_modified {
+                                        last_modified = inner_secs;
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                saves.push(SaveFolder {
-                    name: entry.file_name().to_string_lossy().to_string(),
-                    path: path.to_string_lossy().to_string(),
-                    last_modified,
-                });
+                    saves.push(SaveFolder {
+                        name: entry.file_name().to_string_lossy().to_string(),
+                        path: path.to_string_lossy().to_string(),
+                        last_modified,
+                    });
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to read directory entry: {}", e);
             }
         }
     }
@@ -136,14 +150,16 @@ pub fn backup_save(save_name: String) -> Result<(), String> {
 
     let backup_root = ensure_backup_dir()?;
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-    let backup_name = format!("{}____{}", save_name, timestamp);
+    let backup_name = format!("{}__TS__{}", save_name, timestamp); // Fix 7: resilient delimiter
 
     // Write into a temporary directory first, then rename — this makes the
     // backup atomic: a partial copy can never be mistaken for a valid backup.
-    let temp_dir = backup_root.join(format!(".tmp_{}", backup_name));
+    
+    // Fix 2: Add random suffix to temp dir to avoid concurrent races
+    let nanos = std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().subsec_nanos();
+    let temp_dir = backup_root.join(format!(".tmp_{}_{}", backup_name, nanos));
     let final_dir = backup_root.join(&backup_name);
 
-    // Clean up any leftover temp dir from a previous crashed attempt.
     if temp_dir.exists() {
         fs::remove_dir_all(&temp_dir).map_err(|e| e.to_string())?;
     }
@@ -173,10 +189,10 @@ pub fn restore_backup(backup_name: String) -> Result<(), String> {
     }
 
     // Derive the original save name from our naming convention:
-    //   "<SaveName>____<Timestamp>"
+    //   "<SaveName>__TS__<Timestamp>"
     // This is reliable and avoids fragile directory enumeration.
     let original_save_name = backup_name
-        .split("____")
+        .split("__TS__") // Fix 7
         .next()
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
@@ -199,17 +215,30 @@ pub fn restore_backup(backup_name: String) -> Result<(), String> {
     let save_root = get_bg3_save_dir()?;
     let target_dir = save_root.join(&original_save_name);
 
-    // Remove the existing save before restoring.
-    if target_dir.exists() {
-        fs::remove_dir_all(&target_dir).map_err(|e| e.to_string())?;
-    }
+    // Fix 1: Atomic Restoration
+    let nanos = std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().subsec_nanos();
+    let temp_target = save_root.join(format!(".tmp_restore_{}_{}", original_save_name, nanos));
 
     let mut options = fs_extra::dir::CopyOptions::new();
     options.overwrite = true;
     options.copy_inside = true;
 
-    fs_extra::dir::copy(&inner_save_dir, &save_root, &options)
-        .map_err(|e| e.to_string())?;
+    fs::create_dir_all(&temp_target).map_err(|e| e.to_string())?;
+    
+    // Copy out from backup into temporary target
+    fs_extra::dir::copy(&inner_save_dir, &temp_target, &options)
+        .map_err(|e| {
+            let _ = fs::remove_dir_all(&temp_target);
+            format!("Copy failed: {}", e)
+        })?;
+
+    // Atomic promotion: delete old save and immediately swap in the temp save
+    if target_dir.exists() {
+        fs::remove_dir_all(&target_dir).map_err(|e| format!("Failed to remove old save: {}", e))?;
+    }
+    
+    fs::rename(&temp_target, &target_dir)
+        .map_err(|e| format!("Could not finalize restore: {}", e))?;
 
     Ok(())
 }
@@ -228,9 +257,19 @@ pub fn delete_backup(backup_name: String) -> Result<(), String> {
 // Auto-backup state
 // ---------------------------------------------------------------------------
 
+fn log_debug(msg: &str) {
+    if let Ok(dir) = get_backup_dir() {
+        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(dir.join("auto_backup_debug.log")) {
+            use std::io::Write;
+            let _ = writeln!(f, "[{}] {}", chrono::Local::now().format("%H:%M:%S"), msg);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub auto_backup_enabled: Arc<AtomicBool>,
+    pub watcher_generation: Arc<std::sync::atomic::AtomicUsize>, // Fix 3
 }
 
 #[tauri::command]
@@ -239,14 +278,18 @@ pub async fn toggle_auto_backup(
     app_handle: tauri::AppHandle,
     enabled: bool,
 ) -> Result<(), String> {
-    let previously_enabled = state.auto_backup_enabled.swap(enabled, Ordering::SeqCst);
+    state.auto_backup_enabled.store(enabled, Ordering::SeqCst);
+    log_debug(&format!("toggle_auto_backup: {}", enabled));
 
-    // Spawn the watcher loop only when transitioning from disabled → enabled.
-    if enabled && !previously_enabled {
+    if enabled {
+        let gen = state.watcher_generation.fetch_add(1, Ordering::SeqCst) + 1;
         let state_clone = state.inner().clone();
         tauri::async_runtime::spawn(async move {
-            auto_backup_watcher(state_clone, app_handle).await;
+            auto_backup_watcher(state_clone, app_handle, gen).await;
         });
+    } else {
+        // Increment generation to cancel any sleeping watcher
+        state.watcher_generation.fetch_add(1, Ordering::SeqCst);
     }
 
     Ok(())
@@ -261,35 +304,42 @@ pub fn get_auto_backup_status(state: tauri::State<'_, AppState>) -> Result<bool,
 // Event-driven auto-backup (replaces polling loop)
 // ---------------------------------------------------------------------------
 
-async fn auto_backup_watcher(state: AppState, _app: tauri::AppHandle) {
+async fn auto_backup_watcher(state: AppState, _app: tauri::AppHandle, generation: usize) {
     let save_dir = match get_bg3_save_dir() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("Auto backup: could not resolve save directory: {}", e);
+            log_debug(&format!("Auto backup: could not resolve save directory: {}", e));
             return;
         }
     };
 
-    println!("Auto backup watcher started — watching {:?}", save_dir);
+    if !save_dir.exists() {
+        if let Err(e) = fs::create_dir_all(&save_dir) {
+            log_debug(&format!("Auto backup: cannot create save directory: {}", e));
+            return;
+        }
+    }
 
-    // Channel that the debouncer sends batched events through.
-    let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+    log_debug(&format!("Auto backup watcher started (gen {}) — watching {:?}", generation, save_dir));
 
-    // Build a debouncer with a 500 ms quiet period so we don't fire mid-write.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let tx_clone = tx.clone();
     let mut debouncer = match new_debouncer(
-        std::time::Duration::from_millis(500),
+        std::time::Duration::from_millis(2000),
         move |res: notify_debouncer_mini::DebounceEventResult| {
             if let Ok(events) = res {
-                // Only forward if there are actual events.
                 if !events.is_empty() {
-                    let _ = tx.blocking_send(events);
+                    let _ = tx_clone.send(events);
                 }
+            } else {
+                let _ = tx_clone.send(vec![]);
             }
         },
     ) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("Auto backup: failed to create file watcher: {}", e);
+            log_debug(&format!("Auto backup: failed to create file watcher: {}", e));
             return;
         }
     };
@@ -298,43 +348,79 @@ async fn auto_backup_watcher(state: AppState, _app: tauri::AppHandle) {
         .watcher()
         .watch(&save_dir, RecursiveMode::Recursive)
     {
-        eprintln!("Auto backup: failed to watch save directory: {}", e);
+        log_debug(&format!("Auto backup: failed to watch save directory: {}", e));
         return;
     }
 
-    while state.auto_backup_enabled.load(Ordering::SeqCst) {
-        // Wait up to 250 ms for an event, then re-check the enabled flag.
-        let maybe_events =
-            tokio::time::timeout(Duration::from_millis(250), rx.recv()).await;
+    let mut last_backup: Option<Instant> = None;
 
-        if !state.auto_backup_enabled.load(Ordering::SeqCst) {
+    while state.auto_backup_enabled.load(Ordering::SeqCst) && state.watcher_generation.load(Ordering::SeqCst) == generation {
+        let maybe_events =
+            tokio::time::timeout(Duration::from_millis(3000), rx.recv()).await;
+
+        if !state.auto_backup_enabled.load(Ordering::SeqCst) || state.watcher_generation.load(Ordering::SeqCst) != generation {
+            log_debug("Watcher gracefully exiting due to state change");
             break;
         }
 
-        if maybe_events.is_err() {
-            // Timeout — no events, loop again to recheck the flag.
+        let events = match maybe_events {
+            Err(_) => continue,
+            Ok(None) => {
+                log_debug("Auto backup: event channel closed unexpectedly.");
+                break;
+            }
+            Ok(Some(evts)) => evts,
+        };
+        
+        if events.is_empty() {
+            log_debug("Auto backup: Debounce result contained an error.");
             continue;
         }
 
-        // We received at least one debounced event.  Back up the most-recently
-        // modified save.
-        if let Ok(saves) = get_saves() {
-            if let Some(latest) = saves.first() {
-                println!(
-                    "Auto backup: change detected, backing up '{}'",
-                    latest.name
-                );
-                match backup_save(latest.name.clone()) {
-                    Ok(_) => println!("Auto backup: success for '{}'", latest.name),
-                    Err(e) => eprintln!(
-                        "Auto backup: backup failed (game may still be writing): {}",
-                        e
-                    ),
+        log_debug(&format!("Received {} debounced events", events.len()));
+
+        const COOLDOWN_SECS: u64 = 10;
+        if let Some(last) = last_backup {
+            if last.elapsed() < std::time::Duration::from_secs(COOLDOWN_SECS) {
+                log_debug(&format!("Auto backup: cooldown active ({} s), skipping burst.", COOLDOWN_SECS));
+                continue;
+            }
+        }
+
+        let save_dir_len = save_dir.components().count();
+        let affected: HashSet<String> = events
+            .iter()
+            .filter_map(|e| {
+                let c_path = e.path.components().nth(save_dir_len).and_then(|c| c.as_os_str().to_str()).map(|s| s.to_string());
+                log_debug(&format!("Event path: {:?} => resolved to: {:?}", e.path, c_path));
+                c_path
+            })
+            .collect();
+
+        if affected.is_empty() {
+            log_debug("No valid save folders determined from events.");
+            continue;
+        }
+
+        log_debug(&format!("Auto backup: {} event(s) affecting {} save folder(s): {:?}", events.len(), affected.len(), affected));
+
+        for save_name in &affected {
+            if save_name.starts_with(".tmp_") {
+                continue;
+            }
+
+            match backup_save(save_name.clone()) {
+                Ok(_) => {
+                    log_debug(&format!("Auto backup: success for '{}'", save_name));
+                }
+                Err(e) => {
+                    log_debug(&format!("Auto backup: backup failed for '{}': {}", save_name, e));
                 }
             }
         }
+
+        last_backup = Some(Instant::now());
     }
 
-    println!("Auto backup watcher stopped.");
-    // `debouncer` is dropped here, which stops the underlying OS watcher.
+    log_debug("Auto backup watcher stopped.");
 }
