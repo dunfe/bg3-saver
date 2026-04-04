@@ -193,41 +193,31 @@ pub fn get_auto_backup_status(state: tauri::State<'_, AppState>) -> Result<bool,
 async fn auto_backup_loop(state: AppState, _app: tauri::AppHandle) {
     let mut last_backed_up_time = 0;
     
+    println!("Auto backup loop started.");
+    
     while state.auto_backup_enabled.load(Ordering::SeqCst) {
         tokio::time::sleep(Duration::from_secs(2)).await;
         
         if !state.auto_backup_enabled.load(Ordering::SeqCst) {
+            println!("Auto backup disabled, breaking loop.");
             break;
         }
         
         if let Ok(saves) = get_saves() {
             if let Some(latest) = saves.first() {
                 if latest.last_modified > last_backed_up_time {
-                    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
-                    let new_backup_name = format!("{}_{}", latest.name, timestamp);
+                    println!("Detected new/modified save: {} (Time: {} > {})", latest.name, latest.last_modified, last_backed_up_time);
                     
-                    let save_dir = get_bg3_save_dir().unwrap().join(&latest.name);
-                    let mut options = fs_extra::dir::CopyOptions::new();
-                    options.overwrite = true;
-                    // Because we are renaming, we will copy the contents of save_dir 
-                    // inside a newly named folder. Wait, fs_extra doesn't let us rename the root easily 
-                    // if we just copy to `BG3_Backups`.
-                    // Actually, if we create the new backup dir, and copy save_dir into it, it copies inside.
-                    // Wait, we can just use `backup_save(latest.name.clone())` which keeps a 1:1 mirror.
-                    // The prompt says "auto save each 1 minute". Making a mirror of the latest save prevents it from losing data.
-                    // Let's do timestamped backups for safety!
-                    
-                    let target_dir = get_backup_dir().unwrap().join(&new_backup_name);
-                    fs::create_dir_all(&target_dir).unwrap();
-                    let _ = fs_extra::dir::copy(&save_dir, get_backup_dir().unwrap(), &options);
-                    // This creates `target_dir` but `copy` will create `BG3_Backups/save_name_XXX/latest_name`. That's nested.
-                    // To rename a directory, the best way in Rust is copying everything manually, or just use fs_extra correctly.
-                    // Let's do `fs_extra::dir::copy` but with copy_inside = true to target_dir. Wait, copy_inside = true copies the FOLDER.
-                    // If target_dir is `new_backup_name`, it will place `latest.name` inside `new_backup_name`. 
-                    // Let's just mirror the latest save for simplicity.
-                    
-                    let _ = backup_save(latest.name.clone());
-                    last_backed_up_time = latest.last_modified;
+                    match backup_save(latest.name.clone()) {
+                        Ok(_) => {
+                            println!("Auto backup successful for {}", latest.name);
+                            last_backed_up_time = latest.last_modified;
+                        }
+                        Err(e) => {
+                            println!("Auto backup failed (locked by game?), will retry: {}", e);
+                            // We do NOT update `last_backed_up_time` so it will retry securely in 2 seconds.
+                        }
+                    }
                 }
             }
         }
