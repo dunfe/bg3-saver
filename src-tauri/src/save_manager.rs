@@ -221,7 +221,7 @@ pub fn restore_backup(backup_name: String) -> Result<(), String> {
 
     let mut options = fs_extra::dir::CopyOptions::new();
     options.overwrite = true;
-    options.copy_inside = true;
+    options.content_only = true;
 
     fs::create_dir_all(&temp_target).map_err(|e| e.to_string())?;
     
