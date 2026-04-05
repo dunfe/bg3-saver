@@ -2,7 +2,7 @@ use std::collections::{HashSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use std::sync::{Arc, OnceLock, Mutex};
+use std::sync::{OnceLock, Mutex};
 use std::time::{Instant, UNIX_EPOCH};
 
 use notify::RecursiveMode;

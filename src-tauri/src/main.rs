@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    bg3_saver_lib::run()
+    bg3_save_manager_lib::run()
 }
