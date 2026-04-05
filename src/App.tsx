@@ -15,6 +15,7 @@ function App() {
   const [saves, setSaves] = useState<SaveFolder[]>([]);
   const [backups, setBackups] = useState<SaveFolder[]>([]);
   const [loading, setLoading] = useState(false);
+  const [fullscreenImage, setFullscreenImage] = useState<string | null>(null);
 
   const loadData = async () => {
     try {
@@ -78,6 +79,51 @@ function App() {
     return new Date(ts * 1000).toLocaleString();
   };
 
+const SavePreview = ({ path, onExpand }: { path: string; onExpand: (url: string) => void }) => {
+  const [url, setUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    
+    // Cleanup previous URL if path changes
+    let currentUrl: string | null = null;
+
+    invoke<number[]>("get_save_preview", { path })
+      .then((bytes) => {
+        if (!active) return;
+        const ui8 = new Uint8Array(bytes);
+        const blob = new Blob([ui8], { type: "image/webp" });
+        currentUrl = URL.createObjectURL(blob);
+        setUrl(currentUrl);
+      })
+      .catch((e) => {
+        // Silently ignore if no preview is found
+      });
+    
+    return () => {
+      active = false;
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+    }
+  }, [path]);
+
+  if (!url) {
+    return (
+      <div className="w-32 h-[72px] bg-zinc-800/40 rounded flex items-center justify-center border border-white/5 shrink-0">
+        <span className="text-[10px] text-zinc-500 font-medium tracking-widest">NONE</span>
+      </div>
+    );
+  }
+
+  return (
+    <img 
+      src={url} 
+      alt="Save preview" 
+      onClick={() => onExpand(url)}
+      className="w-32 h-[72px] object-cover rounded border border-white/10 shrink-0 shadow-sm cursor-pointer hover:brightness-110 transition-all" 
+    />
+  );
+};
+
   return (
     <div className="dark h-screen overflow-hidden bg-zinc-950 text-slate-50 flex flex-col p-6 font-sans">
       <div className="fixed inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-900/40 via-zinc-950 to-zinc-950" />
@@ -114,6 +160,7 @@ function App() {
               ) : (
                 saves.map(save => (
                   <div key={save.name} className="flex justify-between items-center p-4 bg-black/40 border border-white/5 rounded-xl transition-all hover:bg-black/60 hover:-translate-y-0.5 gap-4">
+                    <SavePreview path={save.path} onExpand={setFullscreenImage} />
                     <div className="flex-1 min-w-0">
                       <h3 className="font-medium text-[15px] truncate" title={save.name}>{save.name}</h3>
                       <p className="text-xs text-zinc-400 mt-1 truncate">{formatDate(save.last_modified)}</p>
@@ -146,6 +193,7 @@ function App() {
               ) : (
                 backups.map(backup => (
                   <div key={backup.name} className="flex justify-between items-center p-4 bg-black/40 border border-white/5 rounded-xl transition-all hover:bg-black/60 hover:-translate-y-0.5 gap-4">
+                    <SavePreview path={backup.path} onExpand={setFullscreenImage} />
                     <div className="flex-1 min-w-0">
                       <h3 className="font-medium text-[15px] truncate" title={backup.name}>{backup.name}</h3>
                       <p className="text-xs text-zinc-400 mt-1 truncate">{formatDate(backup.last_modified)}</p>
@@ -167,6 +215,19 @@ function App() {
         </Card>
 
       </div>
+
+      {fullscreenImage && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 sm:p-12 cursor-pointer animate-in fade-in duration-200"
+          onClick={() => setFullscreenImage(null)}
+        >
+          <img 
+            src={fullscreenImage} 
+            alt="Fullscreen save preview" 
+            className="max-w-full max-h-full object-contain rounded-xl shadow-2xl border border-white/10"
+          />
+        </div>
+      )}
     </div>
   );
 }

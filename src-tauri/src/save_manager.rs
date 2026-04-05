@@ -1,14 +1,35 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+
+use std::sync::{Arc, OnceLock, Mutex};
 use std::time::{Instant, UNIX_EPOCH};
 
 use notify::RecursiveMode;
 use notify_debouncer_mini::new_debouncer;
 use serde::{Deserialize, Serialize};
 use tokio::time::Duration;
+
+static RECENT_RESTORES: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+fn mark_restored(save_name: &str) {
+    if let Ok(mut map) = RECENT_RESTORES.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        map.insert(save_name.to_string(), Instant::now());
+    }
+}
+
+fn recently_restored(save_name: &str) -> bool {
+    if let Ok(mut map) = RECENT_RESTORES.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        if let Some(&time) = map.get(save_name) {
+            if time.elapsed() < std::time::Duration::from_secs(30) {
+                return true;
+            } else {
+                map.remove(save_name);
+            }
+        }
+    }
+    false
+}
 
 // ---------------------------------------------------------------------------
 // Directory helpers
@@ -142,13 +163,39 @@ fn scan_save_dir(dir: &Path) -> Result<Vec<SaveFolder>, String> {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub fn backup_save(save_name: String) -> Result<(), String> {
+pub fn backup_save(save_name: String) -> Result<bool, String> {
     let source_dir = get_bg3_save_dir()?.join(&save_name);
     if !source_dir.exists() {
         return Err("Save folder does not exist".to_string());
     }
 
     let backup_root = ensure_backup_dir()?;
+
+    // Check for duplicate against the most recent backup
+    if let Ok(backups) = get_backups() {
+        if let Some(latest) = backups.iter().find(|b| b.name.starts_with(&format!("{}__TS__", save_name))) {
+            let source_path = source_dir.to_string_lossy().to_string();
+            match (get_save_preview(source_path), get_save_preview(latest.path.clone())) {
+                (Ok(source_preview), Ok(backup_preview)) => {
+                    log_debug(&format!("Comparing previews for '{}': source {} bytes, backup {} bytes", save_name, source_preview.len(), backup_preview.len()));
+                    if source_preview == backup_preview {
+                        // The active save matches the latest backup state.
+                        log_debug(&format!("Skipping backup for '{}': preview image matches latest backup '{}'", save_name, latest.name));
+                        return Ok(false);
+                    } else {
+                        log_debug(&format!("Previews differ for '{}'", save_name));
+                    }
+                }
+                (Err(e1), _) => log_debug(&format!("Failed to read source preview for '{}': {}", save_name, e1)),
+                (_, Err(e2)) => log_debug(&format!("Failed to read backup preview for '{}': {}", latest.name, e2)),
+            }
+        } else {
+            log_debug(&format!("No previous backup found for '{}'", save_name));
+        }
+    } else {
+        log_debug("Failed to get backups list");
+    }
+
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
     let backup_name = format!("{}__TS__{}", save_name, timestamp); // Fix 7: resilient delimiter
 
@@ -176,7 +223,7 @@ pub fn backup_save(save_name: String) -> Result<(), String> {
     fs::rename(&temp_dir, &final_dir)
         .map_err(|e| format!("Could not finalise backup (rename failed): {}", e))?;
 
-    Ok(())
+    Ok(true)
 }
 
 #[tauri::command]
@@ -240,6 +287,8 @@ pub fn restore_backup(backup_name: String) -> Result<(), String> {
     fs::rename(&temp_target, &target_dir)
         .map_err(|e| format!("Could not finalize restore: {}", e))?;
 
+    mark_restored(&original_save_name);
+
     Ok(())
 }
 
@@ -251,6 +300,46 @@ pub fn delete_backup(backup_name: String) -> Result<(), String> {
     }
     fs::remove_dir_all(&backup_dir).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn get_save_preview(path: String) -> Result<Vec<u8>, String> {
+    let folder_path = Path::new(&path);
+    if !folder_path.exists() || !folder_path.is_dir() {
+        return Err("Save path is invalid".to_string());
+    }
+
+    // Check directly in the folder
+    if let Ok(entries) = fs::read_dir(folder_path) {
+        for entry_res in entries {
+            if let Ok(entry) = entry_res {
+                if entry.path().extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("webp")).unwrap_or(false) {
+                    return fs::read(entry.path()).map_err(|e| e.to_string());
+                }
+            }
+        }
+    }
+    
+    // If it's a backup, it has an outer wrapper, so the save is one folder deeper.
+    if let Ok(entries) = fs::read_dir(folder_path) {
+        for entry_res in entries {
+            if let Ok(entry) = entry_res {
+                if entry.path().is_dir() {
+                    if let Ok(inner_entries) = fs::read_dir(entry.path()) {
+                        for inner_entry_res in inner_entries {
+                            if let Ok(inner_entry) = inner_entry_res {
+                                if inner_entry.path().extension().and_then(|s| s.to_str()).map(|s| s.eq_ignore_ascii_case("webp")).unwrap_or(false) {
+                                    return fs::read(inner_entry.path()).map_err(|e| e.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Err("No webp preview found".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -361,14 +450,25 @@ pub async fn auto_backup_watcher(_app: tauri::AppHandle) {
 
         log_debug(&format!("Auto backup: {} event(s) affecting {} save folder(s): {:?}", events.len(), affected.len(), affected));
 
+        let mut any_backed_up = false;
         for save_name in &affected {
             if save_name.starts_with(".tmp_") {
                 continue;
             }
 
+            if recently_restored(save_name) {
+                log_debug(&format!("Auto backup: skipping backup for '{}' because it was just restored.", save_name));
+                continue;
+            }
+
             match backup_save(save_name.clone()) {
-                Ok(_) => {
-                    log_debug(&format!("Auto backup: success for '{}'", save_name));
+                Ok(backed_up) => {
+                    if backed_up {
+                        log_debug(&format!("Auto backup: successfully backed up '{}'", save_name));
+                        any_backed_up = true;
+                    } else {
+                        log_debug(&format!("Auto backup: skipped duplicate backup for '{}'", save_name));
+                    }
                 }
                 Err(e) => {
                     log_debug(&format!("Auto backup: backup failed for '{}': {}", save_name, e));
@@ -376,7 +476,9 @@ pub async fn auto_backup_watcher(_app: tauri::AppHandle) {
             }
         }
 
-        last_backup = Some(Instant::now());
+        if any_backed_up {
+            last_backup = Some(Instant::now());
+        }
     }
 
     log_debug("Auto backup watcher stopped.");

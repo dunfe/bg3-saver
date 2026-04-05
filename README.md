@@ -47,7 +47,7 @@ bun run tauri build
 ## Project Structure
 
 ```
-bg3-saver/
+bg3-save-manager/
 ├── src/                    # React frontend
 │   ├── App.tsx             # Main UI — save list, backup/restore controls
 │   ├── components/ui/      # shadcn/ui components

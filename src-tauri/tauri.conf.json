@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "bg3-saver",
+  "productName": "BG3 Save Manager",
   "version": "0.1.0",
-  "identifier": "com.bg3-saver.app",
+  "identifier": "com.bg3-save-manager.app",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "bg3-saver",
+        "title": "BG3 Save Manager",
         "width": 800,
         "height": 600
       }
