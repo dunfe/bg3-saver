@@ -1,6 +1,6 @@
 pub mod save_manager;
 
-use save_manager::{backup_save, delete_backup, get_backups, get_save_preview, get_saves, restore_backup};
+use save_manager::{backup_save, delete_backup, get_backups, get_save_preview, get_saves, restore_backup, update_backup_notes};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -20,6 +20,7 @@ pub fn run() {
             restore_backup,
             delete_backup,
             get_save_preview,
+            update_backup_notes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

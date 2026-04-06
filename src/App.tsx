@@ -11,7 +11,8 @@ import {
   Clock,
   ExternalLink,
   History,
-  AlertCircle
+  AlertCircle,
+  Pencil
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription, CardFooter } from "@/components/ui/card";
@@ -31,11 +32,21 @@ import {
 import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 interface SaveFolder {
   name: string;
   path: string;
   last_modified: number;
+  notes?: string;
 }
 
 const SavePreview = memo(({ path, last_modified, onExpand, className = "w-32 h-[72px]" }: { path: string; last_modified: number; onExpand: (url: string) => void, className?: string }) => {
@@ -93,6 +104,8 @@ function App() {
   // Dialog states
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [confirmRestore, setConfirmRestore] = useState<string | null>(null);
+  const [editingNotes, setEditingNotes] = useState<{ backupName: string; notes: string } | null>(null);
+  const [notesDraft, setNotesDraft] = useState("");
 
   const loadData = useCallback(async () => {
     try {
@@ -174,6 +187,26 @@ function App() {
       setConfirmDelete(null);
     }
   }, [loadData]);
+
+  const openNotesEditor = useCallback((backup: SaveFolder) => {
+    setEditingNotes({ backupName: backup.name, notes: backup.notes ?? "" });
+    setNotesDraft(backup.notes ?? "");
+  }, []);
+
+  const saveNotes = useCallback(async () => {
+    if (!editingNotes) return;
+    try {
+      await invoke("update_backup_notes", {
+        backupName: editingNotes.backupName,
+        notes: notesDraft,
+      });
+      toast.success("Notes saved");
+      setEditingNotes(null);
+      await loadData();
+    } catch (e) {
+      toast.error("Failed to save notes", { description: String(e) });
+    }
+  }, [editingNotes, notesDraft, loadData]);
 
   const formatDate = (ts: number) => {
     return new Date(ts * 1000).toLocaleString();
@@ -358,7 +391,7 @@ function App() {
                       </div>
                     ) : (
                       backups.map(backup => (
-                        <div key={backup.name} className="flex items-center p-4 bg-zinc-900/40 border border-white/5 rounded-xl hover:bg-zinc-900/60 transition-all duration-300 group/item">
+                        <div key={backup.name} className="flex items-start p-4 bg-zinc-900/40 border border-white/5 rounded-xl hover:bg-zinc-900/60 transition-all duration-300 group/item">
                           <SavePreview path={backup.path} last_modified={backup.last_modified} onExpand={setFullscreenImage} />
                           <div className="ml-4 flex-1 min-w-0">
                             <h3 className="font-semibold text-sm truncate group-hover/item:text-purple-300 transition-colors" title={backup.name}>{backup.name}</h3>
@@ -366,8 +399,29 @@ function App() {
                               <History className="w-3 h-3 mr-1" />
                               {formatDate(backup.last_modified)}
                             </p>
+                            {backup.notes && backup.notes.length > 0 ? (
+                              <p className="text-xs text-zinc-400 mt-1.5 line-clamp-2 italic" title={backup.notes}>
+                                {backup.notes}
+                              </p>
+                            ) : (
+                              <p className="text-xs text-zinc-600 mt-1.5 italic">No notes</p>
+                            )}
                           </div>
                           <div className="flex gap-1">
+                            <Tooltip>
+                              <TooltipTrigger render={
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => openNotesEditor(backup)}
+                                  className="h-10 w-10 rounded-full hover:bg-amber-500/20 text-zinc-400 hover:text-amber-400 border border-transparent hover:border-amber-500/30 transition-all"
+                                />
+                              }>
+                                <Pencil className="w-4 h-4" />
+                              </TooltipTrigger>
+                              <TooltipContent>Edit Notes</TooltipContent>
+                            </Tooltip>
+
                             <Tooltip>
                               <TooltipTrigger render={
                                 <Button
@@ -482,6 +536,40 @@ function App() {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        {/* Notes Edit Dialog */}
+        <Dialog open={editingNotes !== null} onOpenChange={(open) => !open && setEditingNotes(null)}>
+          <DialogContent className="glass border-white/10 text-slate-50 sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle className="text-xl">Edit Notes</DialogTitle>
+              <DialogDescription className="text-zinc-400">
+                Add notes for <span className="text-purple-400 font-bold">{editingNotes?.backupName}</span>
+              </DialogDescription>
+            </DialogHeader>
+            <Textarea
+              value={notesDraft}
+              onChange={(e) => setNotesDraft(e.target.value)}
+              placeholder="Add notes about this backup..."
+              className="min-h-[150px] bg-zinc-900/50 border-white/10 text-slate-50 placeholder:text-zinc-600 resize-none"
+              rows={6}
+            />
+            <DialogFooter className="gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setEditingNotes(null)}
+                className="bg-transparent border-white/10 hover:bg-white/5 text-slate-100"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={saveNotes}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white"
+              >
+                Save Notes
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
       </div>
     </TooltipProvider>
